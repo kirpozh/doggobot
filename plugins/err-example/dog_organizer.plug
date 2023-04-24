@@ -1,0 +1,9 @@
+[Core]
+Name = DogOrganizer
+Module = dog_organizer
+
+[Documentation]
+Description = Бот-органайзер для владельцев собак.
+
+[Python]
+Version = 3

@@ -1,0 +1,24 @@
+plugins/err-example/dog_organizer copy.py
+plugins/err-example/database.py
+data/VersionChecker.db
+data/Utils.db
+data/telegram_backend.db
+data/repomgr.db
+data/Plugins.db
+data/Help.db
+data/Health.db
+data/Flows.db
+data/DogOrganizer.db
+data/core.db
+data/CommandNotFoundFilter.db
+data/ChatRoom.db
+data/Backup.db
+data/ACLs.db
+__pycache__/config.cpython-39.pyc
+.idea/inspectionProfiles/profiles_settings.xml
+.idea/modules.xml
+.idea/misc.xml
+.idea/doggobot.iml
+plugins/err-example/__pycache__/dog_organizer.cpython-39.pyc
+errbot.log
+.idea/.gitignore

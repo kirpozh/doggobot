@@ -1,12 +1,13 @@
 from errbot import BotPlugin, botcmd
 import re
 from datetime import datetime
-import schedule
+from apscheduler.schedulers.background import BackgroundScheduler
 import time
 import threading
 
 class DogHelper(BotPlugin):
-    scheduler_started = False
+    scheduler = None
+    scheduled_jobs = {}
 
     def activate(self):
         super().activate()
@@ -14,16 +15,16 @@ class DogHelper(BotPlugin):
         self.temp_dogs = {}
         self.user_actions = {}
 
-        if not DogHelper.scheduler_started:
-            scheduler_thread = threading.Thread(target=self.run_schedule)
-            scheduler_thread.start()
-            DogHelper.scheduler_started = True
+        if DogHelper.scheduler is None:
+            DogHelper.scheduler = BackgroundScheduler()
+            DogHelper.scheduler.start()
+
+    def deactivate(self):  
+        if self.scheduler is not None:
+            self.scheduler.shutdown(wait=False) 
+            self.scheduled_jobs.clear()
+        super().deactivate()
     
-    def run_schedule(self):
-        while True:
-            schedule.run_pending()
-            time.sleep(1)
-        
     @botcmd
     def start(self, msg, args):
         text = ("Привет! Я помощник по уходу за твоим питомцем. "
@@ -136,7 +137,7 @@ class DogHelper(BotPlugin):
 
         elif action == 'add_walkout_time':
             try:
-                walkout_time = datetime.strptime(args, "%H:%M")
+                walkout_time = datetime.strptime(args, "%H:%M").time()
             except ValueError:
                 self.send(msg.frm, "Пожалуйста, введите корректное время прогулки в формате ЧЧ:ММ (например, 09:30).")
                 return
@@ -144,7 +145,8 @@ class DogHelper(BotPlugin):
             self.temp_dogs[user_id]['walkouts'].append(walkout_time.strftime("%H:%M"))
 
             dog_name = self.temp_dogs[str(user_id)].get('name', 'Ваша собака')
-            schedule.every().day.at(walkout_time.strftime("%H:%M")).do(self.send_walkout_reminder, str(user_id), dog_name)
+            job = self.scheduler.add_job(self.send_walkout_reminder, 'interval', args=[str(user_id), dog_name], days=1, start_date=datetime.now().replace(hour=walkout_time.hour, minute=walkout_time.minute, second=0, microsecond=0))
+            self.scheduled_jobs[job.id] = job 
 
             if len(self.temp_dogs[user_id]['walkouts']) < self.temp_dogs[user_id]['walkout_count']:
                 next_walkout = len(self.temp_dogs[user_id]['walkouts']) + 1
@@ -152,6 +154,35 @@ class DogHelper(BotPlugin):
             else:
                 self.send(msg.frm, "Времена прогулок успешно добавлены")
                 self.user_actions[user_id] = None
+        
+        elif action.startswith('edit_walkout'):
+            action = action.split("_")
+            if len(action) != 3:
+                self.send(msg.frm, "Пожалуйста, введите команду в формате: /edit_walkout <имя собаки> <номер прогулки>.")
+                return
+
+            try:
+                walkout_time = datetime.strptime(args, "%H:%M")
+            except ValueError:
+                self.send(msg.frm, "Пожалуйста, введите корректное время прогулки в формате ЧЧ:ММ (например, 09:30).")
+                return
+
+            dog_name, walkout_index = action[1], int(action[2]) - 1
+            dog = self._find_dog_by_name(user_id, dog_name)
+            old_walkout = dog['walkouts'][walkout_index]
+            dog['walkouts'][walkout_index] = walkout_time.strftime("%H:%M")
+
+            job_id = f"{str(user_id)}_{dog_name}_{walkout_index + 1}"
+            old_job = DogHelper.scheduled_jobs[job_id]
+            old_job.remove()
+            DogHelper.scheduled_jobs[job_id] = DogHelper.scheduler.add_job(self.send_walkout_reminder, 'cron',
+                                                                        hour=walkout_time.hour,
+                                                                        minute=walkout_time.minute,
+                                                                        args=[str(user_id), dog_name],
+                                                                        id=job_id)
+
+            self.send(msg.frm, f"Время прогулки {walkout_index + 1} для собаки {dog_name} изменено с {old_walkout} на {dog['walkouts'][walkout_index]}.")
+            del self.user_actions[user_id]
 
     def _save_dog(self, user_id):
         if user_id not in self.dogs:
@@ -206,6 +237,21 @@ class DogHelper(BotPlugin):
             f"Порода: {dog['breed']}"
         )
         return dog_info
+    
+    @botcmd
+    def walkout_info(self, msg, args):
+        user_id = msg.frm.id
+        if user_id not in self.dogs:
+            self.send(msg.frm, "У вас пока нет добавленных собак.")
+            return
+
+        response = "Информация о прогулках:\n"
+        for dog in self.dogs[user_id]:
+            response += f"{dog['name']}:\n"
+            for i, walkout in enumerate(dog['walkouts']):
+                response += f"  Прогулка {i + 1}: {walkout}\n"
+
+        self.send(msg.frm, response)
 
     @botcmd
     def edit_dog(self, msg, args):
@@ -219,6 +265,30 @@ class DogHelper(BotPlugin):
         self.temp_dogs[user_id] = dog
         self.send(msg.frm, f"Что вы хотите редактировать для собаки {dog_name}? Введите 'имя', 'возраст', 'пол', 'вес' или 'породу'.")
         self.user_actions[user_id] = 'edit_dog_property'
+
+    @botcmd
+    def edit_walkout(self, msg, args):
+        user_id = msg.frm.id
+        if user_id not in self.dogs:
+            return "У вас еще нет добавленных собак. Сначала добавьте собаку с помощью /add_dog."
+
+        try:
+            dog_name, walkout_index = args.split(" ", 1)
+            walkout_index = int(walkout_index) - 1
+        except ValueError:
+            return "Некорректный формат. Используйте /edit_walkout имя_собаки номер_прогулки"
+
+        dog = self._find_dog_by_name(user_id, dog_name)
+        if dog is None:
+            return f"Собаки с именем '{dog_name}' не найдено."
+
+        try:
+            old_walkout = dog['walkouts'][walkout_index]
+        except IndexError:
+            return f"Прогулка с индексом {walkout_index + 1} не найдена."
+
+        self.user_actions[user_id] = ('edit_walkout', dog_name, walkout_index)
+        return f"Введите новое время прогулки {walkout_index + 1} для собаки {dog_name} в формате ЧЧ:ММ (например, 09:30)."
 
     @botcmd
     def delete_dog(self, msg, args):
@@ -239,7 +309,9 @@ class DogHelper(BotPlugin):
             "/add_dog - добавить собаку\n"
             "/list_dogs - список ваших собак\n"
             "/edit_dog <имя_собаки> - редактировать собаку\n"
+            "/edit_walkout - изменить время прогулки\n"
             "/delete_dog <имя_собаки> - удалить собаку\n"
+            "/walkout_info - показать список активных прогулок\n"
             "Введите / и выберите команду для выполнения."
         )
         return help_text

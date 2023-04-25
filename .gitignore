@@ -22,3 +22,4 @@ __pycache__/config.cpython-39.pyc
 plugins/err-example/__pycache__/dog_organizer.cpython-39.pyc
 errbot.log
 .idea/.gitignore
+plugins/err-example/dog_organizer_backup.py
